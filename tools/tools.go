@@ -57,9 +57,9 @@ var allTools = []toolDef{
 	},
 	{
 		Name:        "get_weather",
-		Description: "Get current weather conditions and forecast for a location. Use this when the user asks about weather, temperature, or forecast.",
-		Properties:  map[string]map[string]string{"location": {"type": "string", "description": "City name, zip code, or location (e.g. 'New York', '90210', 'London')"}},
-		Required:    []string{"location"},
+		Description: "Get current weather conditions and forecast for a location. Use this when the user asks about weather, temperature, or forecast. If no location is provided, the user's default location is used.",
+		Properties:  map[string]map[string]string{"location": {"type": "string", "description": "City name, zip code, or location (e.g. 'New York', '90210', 'London'). Optional if user has a default location set."}},
+		Required:    nil,
 	},
 }
 
@@ -116,9 +116,10 @@ func AnthropicToolDefs() []any {
 
 // Executor runs tool calls and returns results.
 type Executor struct {
-	searchClient *search.Client
-	scraper      *scrape.Scraper
-	httpClient   *http.Client
+	searchClient    *search.Client
+	scraper         *scrape.Scraper
+	httpClient      *http.Client
+	DefaultLocation string // used by get_weather when no location arg is provided
 }
 
 // NewExecutor creates a tool executor.
@@ -206,7 +207,10 @@ func (e *Executor) execCurrentDatetime(call ToolCall) ToolResult {
 func (e *Executor) execGetWeather(ctx context.Context, call ToolCall) ToolResult {
 	location, _ := call.Args["location"].(string)
 	if location == "" {
-		return ToolResult{ID: call.ID, Name: call.Name, Content: "missing required parameter: location", IsError: true}
+		location = e.DefaultLocation
+	}
+	if location == "" {
+		return ToolResult{ID: call.ID, Name: call.Name, Content: "no location provided and no default location set. Ask the user where they are, or have them run /location to set a default.", IsError: true}
 	}
 
 	url := fmt.Sprintf("https://wttr.in/%s?format=j1", strings.ReplaceAll(location, " ", "+"))
