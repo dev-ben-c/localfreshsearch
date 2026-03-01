@@ -4,13 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 
 	"github.com/dev-ben-c/localfreshsearch/scrape"
 	"github.com/dev-ben-c/localfreshsearch/search"
+	"github.com/dev-ben-c/localfreshsearch/weather"
 )
 
 // ToolCall represents an LLM's request to invoke a tool.
@@ -32,7 +31,7 @@ type ToolResult struct {
 type toolDef struct {
 	Name        string
 	Description string
-	Properties  map[string]map[string]string // param name → {type, description}
+	Properties  map[string]map[string]string
 	Required    []string
 }
 
@@ -118,16 +117,22 @@ func AnthropicToolDefs() []any {
 type Executor struct {
 	searchClient    *search.Client
 	scraper         *scrape.Scraper
-	httpClient      *http.Client
-	DefaultLocation string // used by get_weather when no location arg is provided
+	weatherClient   *weather.Client
+	DefaultLocation string
 }
 
-// NewExecutor creates a tool executor.
+// NewExecutor creates a tool executor. It prefetches weather for defaultLocation
+// in the background if set.
 func NewExecutor() *Executor {
 	return &Executor{
-		searchClient: search.NewClient(),
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		searchClient:  search.NewClient(),
+		weatherClient: weather.NewClient(),
 	}
+}
+
+// Prefetch starts background fetches to warm caches.
+func (e *Executor) Prefetch() {
+	e.weatherClient.Prefetch(e.DefaultLocation)
 }
 
 func (e *Executor) ensureScraper() {
@@ -213,115 +218,12 @@ func (e *Executor) execGetWeather(ctx context.Context, call ToolCall) ToolResult
 		return ToolResult{ID: call.ID, Name: call.Name, Content: "no location provided and no default location set. Ask the user where they are, or have them run /location to set a default.", IsError: true}
 	}
 
-	url := fmt.Sprintf("https://wttr.in/%s?format=j1", strings.ReplaceAll(location, " ", "+"))
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	data, err := e.weatherClient.Get(ctx, location)
 	if err != nil {
-		return ToolResult{ID: call.ID, Name: call.Name, Content: fmt.Sprintf("request error: %v", err), IsError: true}
-	}
-	req.Header.Set("User-Agent", "localfreshsearch/1.0")
-
-	resp, err := e.httpClient.Do(req)
-	if err != nil {
-		return ToolResult{ID: call.ID, Name: call.Name, Content: fmt.Sprintf("weather fetch error: %v", err), IsError: true}
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ToolResult{ID: call.ID, Name: call.Name, Content: fmt.Sprintf("read error: %v", err), IsError: true}
+		return ToolResult{ID: call.ID, Name: call.Name, Content: fmt.Sprintf("weather error: %v", err), IsError: true}
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return ToolResult{ID: call.ID, Name: call.Name, Content: fmt.Sprintf("weather API error (%d): %s", resp.StatusCode, string(body)), IsError: true}
-	}
-
-	// Parse and format the relevant fields.
-	var data struct {
-		CurrentCondition []struct {
-			TempF        string `json:"temp_F"`
-			TempC        string `json:"temp_C"`
-			FeelsLikeF   string `json:"FeelsLikeF"`
-			FeelsLikeC   string `json:"FeelsLikeC"`
-			Humidity     string `json:"humidity"`
-			WeatherDesc  []struct{ Value string } `json:"weatherDesc"`
-			WindspeedMph string `json:"windspeedMiles"`
-			WindDir      string `json:"winddir16Point"`
-			PrecipMM     string `json:"precipMM"`
-			Visibility   string `json:"visibilityMiles"`
-			UVIndex      string `json:"uvIndex"`
-		} `json:"current_condition"`
-		NearestArea []struct {
-			AreaName []struct{ Value string } `json:"areaName"`
-			Region   []struct{ Value string } `json:"region"`
-			Country  []struct{ Value string } `json:"country"`
-		} `json:"nearest_area"`
-		Weather []struct {
-			Date       string `json:"date"`
-			MaxTempF   string `json:"maxtempF"`
-			MinTempF   string `json:"mintempF"`
-			MaxTempC   string `json:"maxtempC"`
-			MinTempC   string `json:"mintempC"`
-			TotalSnowCM string `json:"totalSnow_cm"`
-			Hourly     []struct {
-				Time        string `json:"time"`
-				TempF       string `json:"tempF"`
-				WeatherDesc []struct{ Value string } `json:"weatherDesc"`
-				ChanceOfRain string `json:"chanceofrain"`
-			} `json:"hourly"`
-		} `json:"weather"`
-	}
-
-	if err := json.Unmarshal(body, &data); err != nil {
-		return ToolResult{ID: call.ID, Name: call.Name, Content: fmt.Sprintf("parse error: %v", err), IsError: true}
-	}
-
-	var sb strings.Builder
-	if len(data.NearestArea) > 0 {
-		a := data.NearestArea[0]
-		area := ""
-		if len(a.AreaName) > 0 {
-			area = a.AreaName[0].Value
-		}
-		region := ""
-		if len(a.Region) > 0 {
-			region = a.Region[0].Value
-		}
-		country := ""
-		if len(a.Country) > 0 {
-			country = a.Country[0].Value
-		}
-		fmt.Fprintf(&sb, "Location: %s, %s, %s\n", area, region, country)
-	}
-
-	if len(data.CurrentCondition) > 0 {
-		c := data.CurrentCondition[0]
-		desc := ""
-		if len(c.WeatherDesc) > 0 {
-			desc = c.WeatherDesc[0].Value
-		}
-		fmt.Fprintf(&sb, "\nCurrent Conditions: %s\n", desc)
-		fmt.Fprintf(&sb, "Temperature: %s°F / %s°C (feels like %s°F / %s°C)\n", c.TempF, c.TempC, c.FeelsLikeF, c.FeelsLikeC)
-		fmt.Fprintf(&sb, "Humidity: %s%%\n", c.Humidity)
-		fmt.Fprintf(&sb, "Wind: %s mph %s\n", c.WindspeedMph, c.WindDir)
-		fmt.Fprintf(&sb, "Visibility: %s miles\n", c.Visibility)
-		fmt.Fprintf(&sb, "UV Index: %s\n", c.UVIndex)
-		if c.PrecipMM != "0.0" {
-			fmt.Fprintf(&sb, "Precipitation: %s mm\n", c.PrecipMM)
-		}
-	}
-
-	if len(data.Weather) > 0 {
-		sb.WriteString("\nForecast:\n")
-		for _, day := range data.Weather {
-			fmt.Fprintf(&sb, "  %s: %s°F–%s°F / %s°C–%s°C", day.Date, day.MinTempF, day.MaxTempF, day.MinTempC, day.MaxTempC)
-			if day.TotalSnowCM != "0.0" {
-				fmt.Fprintf(&sb, " (snow: %s cm)", day.TotalSnowCM)
-			}
-			sb.WriteString("\n")
-		}
-	}
-
-	return ToolResult{ID: call.ID, Name: call.Name, Content: sb.String()}
+	return ToolResult{ID: call.ID, Name: call.Name, Content: data}
 }
 
 // Close releases resources held by the executor.
