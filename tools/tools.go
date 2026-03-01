@@ -142,16 +142,18 @@ func (e *Executor) ensureScraper() {
 }
 
 // Execute runs a single tool call and returns the result.
+// All outputs are sanitized and wrapped to prevent prompt injection.
 func (e *Executor) Execute(ctx context.Context, call ToolCall) ToolResult {
+	var result ToolResult
 	switch call.Name {
 	case "web_search":
-		return e.execSearch(ctx, call)
+		result = e.execSearch(ctx, call)
 	case "read_page":
-		return e.execReadPage(ctx, call)
+		result = e.execReadPage(ctx, call)
 	case "current_datetime":
-		return e.execCurrentDatetime(call)
+		result = e.execCurrentDatetime(call)
 	case "get_weather":
-		return e.execGetWeather(ctx, call)
+		result = e.execGetWeather(ctx, call)
 	default:
 		return ToolResult{
 			ID:      call.ID,
@@ -160,6 +162,13 @@ func (e *Executor) Execute(ctx context.Context, call ToolCall) ToolResult {
 			IsError: true,
 		}
 	}
+
+	// Sanitize and frame all tool output.
+	result.Content = sanitize(result.Content)
+	if !result.IsError {
+		result.Content = wrapToolOutput(result.Name, result.Content)
+	}
+	return result
 }
 
 func (e *Executor) execSearch(ctx context.Context, call ToolCall) ToolResult {
@@ -175,7 +184,9 @@ func (e *Executor) execSearch(ctx context.Context, call ToolCall) ToolResult {
 
 	var sb strings.Builder
 	for i, r := range results {
-		fmt.Fprintf(&sb, "%d. %s\n   %s\n   %s\n\n", i+1, r.Title, r.URL, r.Content)
+		title := truncate(sanitize(r.Title), 200)
+		content := truncate(sanitize(r.Content), 500)
+		fmt.Fprintf(&sb, "%d. %s\n   %s\n   %s\n\n", i+1, title, r.URL, content)
 	}
 
 	return ToolResult{ID: call.ID, Name: call.Name, Content: sb.String()}
@@ -193,6 +204,10 @@ func (e *Executor) execReadPage(ctx context.Context, call ToolCall) ToolResult {
 	if err != nil {
 		return ToolResult{ID: call.ID, Name: call.Name, Content: fmt.Sprintf("scrape error: %v", err), IsError: true}
 	}
+
+	// Sanitize scraped content before passing to LLM.
+	result.Title = truncate(sanitize(result.Title), 200)
+	result.Content = sanitize(result.Content)
 
 	out, _ := json.Marshal(result)
 	return ToolResult{ID: call.ID, Name: call.Name, Content: string(out)}

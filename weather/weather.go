@@ -164,10 +164,25 @@ func (c *Client) fetchAndFormat(ctx context.Context, location string) (string, e
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("weather API error (%d): %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("weather API error (HTTP %d)", resp.StatusCode)
 	}
 
 	return formatWeather(body)
+}
+
+// cleanField strips control characters and caps length for a weather field.
+func cleanField(s string, maxLen int) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r == '\n' || r == '\t' || !strings.ContainsRune("\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x7f", r) {
+			b.WriteRune(r)
+		}
+	}
+	s = b.String()
+	if len(s) > maxLen {
+		return s[:maxLen]
+	}
+	return s
 }
 
 func formatWeather(body []byte) (string, error) {
@@ -210,13 +225,13 @@ func formatWeather(body []byte) (string, error) {
 		a := data.NearestArea[0]
 		area, region, country := "", "", ""
 		if len(a.AreaName) > 0 {
-			area = a.AreaName[0].Value
+			area = cleanField(a.AreaName[0].Value, 100)
 		}
 		if len(a.Region) > 0 {
-			region = a.Region[0].Value
+			region = cleanField(a.Region[0].Value, 100)
 		}
 		if len(a.Country) > 0 {
-			country = a.Country[0].Value
+			country = cleanField(a.Country[0].Value, 100)
 		}
 		fmt.Fprintf(&sb, "Location: %s, %s, %s\n", area, region, country)
 	}
@@ -225,16 +240,18 @@ func formatWeather(body []byte) (string, error) {
 		c := data.CurrentCondition[0]
 		desc := ""
 		if len(c.WeatherDesc) > 0 {
-			desc = c.WeatherDesc[0].Value
+			desc = cleanField(c.WeatherDesc[0].Value, 100)
 		}
 		fmt.Fprintf(&sb, "\nCurrent Conditions: %s\n", desc)
-		fmt.Fprintf(&sb, "Temperature: %s°F / %s°C (feels like %s°F / %s°C)\n", c.TempF, c.TempC, c.FeelsLikeF, c.FeelsLikeC)
-		fmt.Fprintf(&sb, "Humidity: %s%%\n", c.Humidity)
-		fmt.Fprintf(&sb, "Wind: %s mph %s\n", c.WindspeedMph, c.WindDir)
-		fmt.Fprintf(&sb, "Visibility: %s miles\n", c.Visibility)
-		fmt.Fprintf(&sb, "UV Index: %s\n", c.UVIndex)
+		fmt.Fprintf(&sb, "Temperature: %s°F / %s°C (feels like %s°F / %s°C)\n",
+			cleanField(c.TempF, 10), cleanField(c.TempC, 10),
+			cleanField(c.FeelsLikeF, 10), cleanField(c.FeelsLikeC, 10))
+		fmt.Fprintf(&sb, "Humidity: %s%%\n", cleanField(c.Humidity, 10))
+		fmt.Fprintf(&sb, "Wind: %s mph %s\n", cleanField(c.WindspeedMph, 10), cleanField(c.WindDir, 10))
+		fmt.Fprintf(&sb, "Visibility: %s miles\n", cleanField(c.Visibility, 10))
+		fmt.Fprintf(&sb, "UV Index: %s\n", cleanField(c.UVIndex, 10))
 		if c.PrecipMM != "0.0" {
-			fmt.Fprintf(&sb, "Precipitation: %s mm\n", c.PrecipMM)
+			fmt.Fprintf(&sb, "Precipitation: %s mm\n", cleanField(c.PrecipMM, 10))
 		}
 	}
 
