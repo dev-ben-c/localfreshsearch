@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,7 +146,7 @@ func (c *Client) Prefetch(location string) {
 }
 
 func (c *Client) fetchAndFormat(ctx context.Context, location string) (string, error) {
-	url := fmt.Sprintf("https://wttr.in/%s?format=j1", strings.ReplaceAll(location, " ", "+"))
+	url := fmt.Sprintf("https://wttr.in/%s?format=j1", url.PathEscape(location))
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", fmt.Errorf("request error: %w", err)
