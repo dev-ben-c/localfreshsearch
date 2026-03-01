@@ -38,7 +38,7 @@ type toolDef struct {
 var allTools = []toolDef{
 	{
 		Name:        "web_search",
-		Description: "Search the web for current information using a search engine. Use this when you need up-to-date information, facts, or answers that may not be in your training data.",
+		Description: "Search the web for current information. Returns titles, URLs, and brief snippets. If the snippets don't contain the specific data you need (e.g. prices, stats, detailed answers), follow up with read_page on the most relevant URL to get the full content.",
 		Properties:  map[string]map[string]string{"query": {"type": "string", "description": "The search query"}},
 		Required:    []string{"query"},
 	},
